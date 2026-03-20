@@ -7,14 +7,16 @@
 
 retrieval_task:
   description: >
-    Retrieve the most relevant information from the available sources for the user query: {query}
+    Retrieve the most relevant evidence from the indexed knowledge base for the user query: {query}.
+    Keep the original source labels and chunk references in the returned context.
   expected_output: >
-    The most relevant information in form of text as retrieved from the sources.
+    A set of relevant excerpts, each including its source label and chunk reference.
   agent: retriever_agent
 
 response_task:
   description: >
-    Synthesize the final response for the user query: {query}
+    Answer the user query: {query} using only the retrieved evidence. Include inline source citations
+    in the final answer.
   expected_output: >
-    A concise and coherent response based on the retrieved infromation from the right source for the user query: {query}. If you are not ble to retrieve the information then respond with "I'm sorry, I couldn't find the information you're looking for."
+    A concise answer with inline source citations. If the evidence is insufficient, say so explicitly.
   agent: response_synthesizer_agent

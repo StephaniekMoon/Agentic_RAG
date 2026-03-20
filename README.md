@@ -40,12 +40,13 @@ Instead of positioning the project as a generic PDF chatbot, the repository now 
 Install the core dependencies:
 
 ```bash
-pip install crewai crewai-tools chonkie[semantic] markitdown qdrant-client fastembed streamlit
+pip install -e .
 ```
 
 Optional environment variables:
 
 - `SERPER_API_KEY` for web fallback
+- `AGENTIC_RAG_PDF_PATH` to set the default PDF used by the packaged CLI
 - `OPENAI_API_KEY` or `DASHSCOPE_API_KEY` for the DashScope/Qwen app
 - `OPENAI_BASE_URL` to override the OpenAI-compatible endpoint
 - `OLLAMA_BASE_URL` to override the local Ollama endpoint
@@ -56,6 +57,12 @@ Default app:
 
 ```bash
 streamlit run app.py
+```
+
+Packaged CLI smoke run:
+
+```bash
+agentic_rag --pdf knowledge/dspy.pdf --query "What is DSPy?"
 ```
 
 DashScope/Qwen variant:

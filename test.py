@@ -1,31 +1,55 @@
-# test_web_search.py
-import os
-from dotenv import load_dotenv
-load_dotenv()
+from __future__ import annotations
 
-from src.agentic_rag.tools.custom_tool import FireCrawlWebSearchTool
+import argparse
+from pathlib import Path
 
-def test_web_search():
-    """测试网页搜索工具"""
-    print("🔧 初始化网页搜索工具...")
-    try:
-        tool = FireCrawlWebSearchTool()
-        print("✅ 工具初始化成功！")
-        
-        # 测试搜索
-        query = "DSPy framework introduction"
-        print(f"\n🔍 测试搜索: '{query}'")
-        
-        result = tool._run(query, limit=2)
-        
-        print("\n📄 搜索结果:")
-        print("-" * 50)
-        print(result[:1000] + "..." if len(result) > 1000 else result)
-        print("-" * 50)
-        print("✅ 搜索完成！")
-        
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")
+from src.agentic_rag.tools.custom_tool import DocumentSearchTool
+
+
+def _default_pdf_path() -> Path:
+    return Path(__file__).resolve().parent / "knowledge" / "dspy.pdf"
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Smoke test for the current DocumentSearchTool implementation."
+    )
+    parser.add_argument(
+        "--pdf",
+        default=str(_default_pdf_path()),
+        help="PDF path to index for the smoke test.",
+    )
+    parser.add_argument(
+        "--query",
+        default="What is DSPy?",
+        help="Query to run against the indexed PDF.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=2,
+        help="Number of chunks to retrieve.",
+    )
+    return parser
+
+
+def run_smoke_test(pdf_path: str, query: str, top_k: int) -> None:
+    print("Initializing DocumentSearchTool...")
+    tool = DocumentSearchTool(file_path=pdf_path, top_k=top_k)
+
+    print("Indexed sources:")
+    for source_name in tool.describe_sources():
+        print(f"- {source_name}")
+
+    print(f"\nQuery: {query}")
+    result = tool._run(query)
+
+    print("\nResult:")
+    print("-" * 50)
+    print(result)
+    print("-" * 50)
+
 
 if __name__ == "__main__":
-    test_web_search()
+    args = _parser().parse_args()
+    run_smoke_test(pdf_path=args.pdf, query=args.query, top_k=args.top_k)

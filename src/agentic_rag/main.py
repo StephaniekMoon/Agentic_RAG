@@ -1,4 +1,7 @@
 #!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
 import sys
 import warnings
 
@@ -6,25 +9,54 @@ from agentic_rag.crew import AgenticRag
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
-# This main file is intended to be a way for you to run your
-# crew locally, so refrain from adding unnecessary logic into this file.
-# Replace with inputs you want to test with, it will automatically
-# interpolate any tasks and agents information
 
-def run():
-    """
-    Run the crew.
-    """
-    inputs = {
-        'query': 'Who is elon musk?'
-    }
-    AgenticRag().crew().kickoff(inputs=inputs)
+def _run_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run the Agentic RAG crew against a PDF knowledge base."
+    )
+    parser.add_argument(
+        "--query",
+        default="What is DSPy?",
+        help="Question to ask the knowledge base.",
+    )
+    parser.add_argument(
+        "--pdf",
+        dest="pdf_path",
+        default=None,
+        help=(
+            "Path to the PDF used by DocumentSearchTool. "
+            "Defaults to AGENTIC_RAG_PDF_PATH or knowledge/dspy.pdf."
+        ),
+    )
+    parser.add_argument(
+        "--disable-web-search",
+        action="store_true",
+        help="Disable the optional Serper web fallback even if SERPER_API_KEY is set.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Reduce CrewAI verbosity.",
+    )
+    return parser
 
 
-def train():
-    """
-    Train the crew for a given number of iterations.
-    """
+def run() -> None:
+    """Run the crew from the packaged CLI."""
+    args = _run_parser().parse_args(sys.argv[1:])
+    inputs = {"query": args.query}
+
+    result = AgenticRag(
+        knowledge_file=args.pdf_path,
+        enable_web_search=not args.disable_web_search,
+        verbose=not args.quiet,
+    ).crew().kickoff(inputs=inputs)
+
+    print(result.raw)
+
+
+def train() -> None:
+    """Train the crew for a given number of iterations."""
     inputs = {
         "topic": "AI LLMs"
     }
@@ -34,20 +66,16 @@ def train():
     except Exception as e:
         raise Exception(f"An error occurred while training the crew: {e}")
 
-def replay():
-    """
-    Replay the crew execution from a specific task.
-    """
+def replay() -> None:
+    """Replay the crew execution from a specific task."""
     try:
         AgenticRag().crew().replay(task_id=sys.argv[1])
 
     except Exception as e:
         raise Exception(f"An error occurred while replaying the crew: {e}")
 
-def test():
-    """
-    Test the crew execution and returns the results.
-    """
+def test() -> None:
+    """Test the crew execution and return the results."""
     inputs = {
         "topic": "AI LLMs"
     }

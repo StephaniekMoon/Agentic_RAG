@@ -9,7 +9,7 @@ from chonkie import SemanticChunker
 from crewai.tools import BaseTool
 from markitdown import MarkItDown
 from pydantic import BaseModel, ConfigDict, Field
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, models
 
 
 class DocumentSearchToolInput(BaseModel):
@@ -40,6 +40,8 @@ class DocumentSearchTool(BaseTool):
         self.top_k = max(1, top_k)
         self.client = QdrantClient(":memory:")
         self.collection_name = "knowledge_base"
+        self.embedding_model_name = self.client.embedding_model_name
+        self.vector_name = self.client.get_vector_field_name()
         self.source_names = [os.path.basename(path) for path in self.file_paths]
         self._process_documents()
 
@@ -90,11 +92,29 @@ class DocumentSearchTool(BaseTool):
         slug = re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
         return slug or "doc"
 
+    def _ensure_collection(self) -> None:
+        """Create the in-memory Qdrant collection with fastembed-aware vector settings."""
+        try:
+            self.client.get_collection(collection_name=self.collection_name)
+            return
+        except Exception:
+            pass
+
+        sparse_vectors_config = None
+        if getattr(self.client, "sparse_embedding_model_name", None) is not None:
+            sparse_vectors_config = self.client.get_fastembed_sparse_vector_params()
+
+        self.client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=self.client.get_fastembed_vector_params(),
+            sparse_vectors_config=sparse_vectors_config,
+        )
+
     def _process_documents(self) -> None:
-        """Process all documents and add chunks to the in-memory Qdrant collection."""
-        docs: list[str] = []
-        metadata: list[dict[str, str | int]] = []
-        ids: list[int] = []
+        """Process all documents and upload chunks with the newer Qdrant inference API."""
+        self._ensure_collection()
+
+        points: list[models.PointStruct] = []
         next_id = 0
 
         for file_path in self.file_paths:
@@ -108,24 +128,31 @@ class DocumentSearchTool(BaseTool):
                 if not chunk_text:
                     continue
 
-                docs.append(chunk_text)
-                metadata.append(
-                    {
-                        "source": source_name,
-                        "chunk_id": f"{source_slug}_c{chunk_index:03d}",
-                    }
+                points.append(
+                    models.PointStruct(
+                        id=next_id,
+                        vector={
+                            self.vector_name: models.Document(
+                                text=chunk_text,
+                                model=self.embedding_model_name,
+                            )
+                        },
+                        payload={
+                            "source": source_name,
+                            "chunk_id": f"{source_slug}_c{chunk_index:03d}",
+                            "text": chunk_text,
+                        },
+                    )
                 )
-                ids.append(next_id)
                 next_id += 1
 
-        if not docs:
+        if not points:
             raise ValueError("No usable text was extracted from the uploaded PDFs.")
 
-        self.client.add(
+        self.client.upload_points(
             collection_name=self.collection_name,
-            documents=docs,
-            metadata=metadata,
-            ids=ids,
+            points=points,
+            wait=True,
         )
 
     def describe_sources(self) -> list[str]:
@@ -134,16 +161,18 @@ class DocumentSearchTool(BaseTool):
 
     def _run(self, query: str) -> str:
         """Search the indexed knowledge base and return excerpts with source tags."""
-        relevant_chunks = self.client.query(
+        relevant_chunks = self.client.query_points(
             collection_name=self.collection_name,
-            query_text=query,
+            query=models.Document(text=query, model=self.embedding_model_name),
+            using=self.vector_name,
             limit=self.top_k,
+            with_payload=True,
         )
 
         formatted_chunks: list[str] = []
-        for chunk in relevant_chunks:
-            chunk_text = getattr(chunk, "document", "") or ""
-            chunk_meta = getattr(chunk, "metadata", {}) or {}
+        for chunk in relevant_chunks.points:
+            chunk_meta = getattr(chunk, "payload", {}) or {}
+            chunk_text = chunk_meta.get("text", "") or ""
             source_name = chunk_meta.get("source", "unknown_source.pdf")
             chunk_id = chunk_meta.get("chunk_id", "chunk_unknown")
             if not chunk_text:
