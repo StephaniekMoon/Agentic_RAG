@@ -60,53 +60,74 @@ class DocumentSearchTool(BaseTool):
         seen_paths: set[str] = set()
         for path in candidate_paths:
             resolved = os.path.abspath(path)
+            #跳过复制文件
             if resolved in seen_paths:
                 continue
+            #跳过不存在的文件
             if not os.path.isfile(resolved):
                 raise FileNotFoundError(f"Knowledge base PDF not found: {resolved}")
+            #跳过重复文件
             seen_paths.add(resolved)
+            #跳过非PDF文件
             normalized_paths.append(resolved)
 
         if not normalized_paths:
             raise ValueError("DocumentSearchTool requires at least one PDF file.")
         return normalized_paths
-
+    # PDF处理
     def _extract_text(self, path: str) -> str:
         """Extract raw text from a PDF using MarkItDown."""
+        # 使用MarkItDown提取文本
         md = MarkItDown()
+        #   提取PDF文本
         result = md.convert(path)
+        # 返回文本
         return result.text_content
-
+    # 语义分块
     def _create_chunks(self, raw_text: str) -> list:
         """Create semantic chunks from raw text."""
+        # 创建语义分块
         chunker = SemanticChunker(
+            # 使用minishlab/potion-base-8M模型进行文本嵌入
             embedding_model="minishlab/potion-base-8M",
+            # 设置阈值为0.5，以控制分块的相似度
             threshold=0.5,
+            # 设置分块大小为512字节
             chunk_size=512,
+            # 设置最小句子数为1，以确保每个分块至少包含一个完整的句子
             min_sentences=1,
         )
         return chunker.chunk(raw_text)
 
     def _source_slug(self, path: str) -> str:
+        # 生成源文件的Slug
         stem = Path(path).stem.lower()
+        #   删除特殊字符
         slug = re.sub(r"[^a-z0-9]+", "_", stem).strip("_")
+        # 返回Slug
         return slug or "doc"
-
+    # 创建索引
     def _ensure_collection(self) -> None:
         """Create the in-memory Qdrant collection with fastembed-aware vector settings."""
         try:
+            # 检查是否存在指定的集合
             self.client.get_collection(collection_name=self.collection_name)
             return
         except Exception:
             pass
-
+        # 创建集合
         sparse_vectors_config = None
+        #   检查是否存在稀疏嵌入模型
         if getattr(self.client, "sparse_embedding_model_name", None) is not None:
+            # 创建稀疏向量配置
             sparse_vectors_config = self.client.get_fastembed_sparse_vector_params()
-
+        # 创建集合
         self.client.create_collection(
+            # 集合名称
             collection_name=self.collection_name,
+            # 向量配置
             vectors_config=self.client.get_fastembed_vector_params(),
+            # 稀疏向量配置
             sparse_vectors_config=sparse_vectors_config,
         )
 

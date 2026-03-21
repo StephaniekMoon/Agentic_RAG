@@ -9,8 +9,9 @@ from agentic_rag.crew import AgenticRag
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
-
+# CLI：运行、训练、回放和测试功能
 def _run_parser() -> argparse.ArgumentParser:
+    # CLI解析器设置
     parser = argparse.ArgumentParser(
         description="Run the Agentic RAG crew against a PDF knowledge base."
     )
