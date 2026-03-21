@@ -12,6 +12,7 @@ from src.agentic_rag.tools.custom_tool import DocumentSearchTool
 
 
 def build_web_search_tool() -> Optional[SerperDevTool]:
+    """Create the optional web fallback only when credentials are available."""
     if not os.getenv("SERPER_API_KEY"):
         return None
     try:
@@ -84,11 +85,13 @@ def create_agents_and_tasks(knowledge_base_tool: DocumentSearchTool) -> Crew:
 
 
 def reset_chat() -> None:
+    """Clear only the conversation history."""
     st.session_state.messages = []
     gc.collect()
 
 
 def reset_knowledge_base() -> None:
+    """Clear the indexed PDFs and reset the chat workflow state."""
     st.session_state.messages = []
     st.session_state.pdf_tool = None
     st.session_state.crew = None
@@ -98,6 +101,7 @@ def reset_knowledge_base() -> None:
 
 
 def index_uploaded_pdfs(uploaded_files) -> None:
+    """Index uploaded PDFs once per unique upload set."""
     file_signature = tuple((uploaded_file.name, uploaded_file.size) for uploaded_file in uploaded_files)
     if file_signature == st.session_state.knowledge_base_signature:
         return
