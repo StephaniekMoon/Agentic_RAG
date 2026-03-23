@@ -8,7 +8,9 @@ import streamlit as st
 from crewai import Agent, Crew, LLM, Process, Task
 from crewai_tools import SerperDevTool
 
-from src.agentic_rag.tools.custom_tool import DocumentSearchTool
+from src.agentic_rag.tools.custom_tool import DocumentSearchTool, SUPPORTED_DOCUMENT_EXTENSIONS
+
+SUPPORTED_UPLOAD_TYPES = [extension.removeprefix(".") for extension in SUPPORTED_DOCUMENT_EXTENSIONS]
 
 
 @st.cache_resource
@@ -28,6 +30,28 @@ def build_web_search_tool() -> Optional[SerperDevTool]:
         return None
 
 
+def answer_query_with_guardrails(knowledge_base_tool: DocumentSearchTool, query: str, crew: Crew | None) -> tuple[str, Crew | None]:
+    """Route the query through retrieval confidence, fallback, and answer validation."""
+    bundle = knowledge_base_tool.prepare_answer_bundle(query=query, limit=5)
+    confidence = bundle["confidence"]
+
+    rule_based_answer = knowledge_base_tool.extract_rule_based_answer(bundle)
+    if rule_based_answer:
+        return rule_based_answer, crew
+
+    if confidence["level"] == "low":
+        return knowledge_base_tool.build_low_confidence_fallback(bundle), crew
+
+    if crew is None:
+        crew = create_agents_and_tasks(knowledge_base_tool)
+
+    llm_answer = crew.kickoff(inputs={"query": query}).raw
+    validation = knowledge_base_tool.validate_generated_answer(llm_answer, bundle)
+    if not validation["is_valid"]:
+        return knowledge_base_tool.build_validation_fallback(llm_answer, bundle, validation), crew
+    return llm_answer, crew
+
+
 def create_agents_and_tasks(knowledge_base_tool: DocumentSearchTool) -> Crew:
     web_search_tool = build_web_search_tool()
     llm = load_llm()
@@ -37,7 +61,7 @@ def create_agents_and_tasks(knowledge_base_tool: DocumentSearchTool) -> Crew:
         goal=(
             "Retrieve the most relevant evidence from the indexed knowledge base first and "
             "preserve source tags such as [Source: ... | Ref: ...]. Use web search only as "
-            "a fallback when the PDF knowledge base is insufficient."
+            "a fallback when the document knowledge base is insufficient."
         ),
         backstory=(
             "You help employees search internal SOPs, manuals, and policy documents while "
@@ -91,14 +115,14 @@ def reset_chat() -> None:
 
 def reset_knowledge_base() -> None:
     st.session_state.messages = []
-    st.session_state.pdf_tool = None
+    st.session_state.knowledge_base_tool = None
     st.session_state.crew = None
     st.session_state.knowledge_base_signature = None
     st.session_state.knowledge_sources = []
     gc.collect()
 
 
-def index_uploaded_pdfs(uploaded_files) -> None:
+def index_uploaded_documents(uploaded_files) -> None:
     file_signature = tuple((uploaded_file.name, uploaded_file.size) for uploaded_file in uploaded_files)
     if file_signature == st.session_state.knowledge_base_signature:
         return
@@ -112,10 +136,10 @@ def index_uploaded_pdfs(uploaded_files) -> None:
             file_paths.append(temp_file_path)
 
         with st.spinner("Indexing enterprise knowledge base... Please wait..."):
-            st.session_state.pdf_tool = DocumentSearchTool(file_paths=file_paths)
+            st.session_state.knowledge_base_tool = DocumentSearchTool(file_paths=file_paths)
 
     st.session_state.knowledge_base_signature = file_signature
-    st.session_state.knowledge_sources = st.session_state.pdf_tool.describe_sources()
+    st.session_state.knowledge_sources = st.session_state.knowledge_base_tool.describe_sources()
     st.session_state.crew = None
     st.session_state.messages = []
 
@@ -123,8 +147,8 @@ def index_uploaded_pdfs(uploaded_files) -> None:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if "pdf_tool" not in st.session_state:
-    st.session_state.pdf_tool = None
+if "knowledge_base_tool" not in st.session_state:
+    st.session_state.knowledge_base_tool = None
 
 if "crew" not in st.session_state:
     st.session_state.crew = None
@@ -139,18 +163,18 @@ if "knowledge_sources" not in st.session_state:
 with st.sidebar:
     st.header("Enterprise Knowledge Base")
     uploaded_files = st.file_uploader(
-        "Upload one or more PDF documents",
-        type=["pdf"],
+        "Upload PDF or Word documents",
+        type=SUPPORTED_UPLOAD_TYPES,
         accept_multiple_files=True,
     )
 
     if uploaded_files:
-        index_uploaded_pdfs(uploaded_files)
+        index_uploaded_documents(uploaded_files)
         st.success(f"Indexed {len(st.session_state.knowledge_sources)} documents.")
         for source_name in st.session_state.knowledge_sources:
             st.write(f"- {source_name}")
     else:
-        st.info("Add internal docs, SOPs, manuals, or policy PDFs to build the knowledge base.")
+        st.info("Add internal PDFs or Word documents to build the knowledge base.")
 
     st.button("Clear Chat", on_click=reset_chat)
     st.button("Reset Knowledge Base", on_click=reset_knowledge_base)
@@ -158,7 +182,7 @@ with st.sidebar:
 
 st.title("Enterprise Knowledge Base Agentic RAG")
 st.caption(
-    "Local Llama-backed assistant for enterprise knowledge base QA over multiple PDFs "
+    "Local Llama-backed assistant for enterprise knowledge base QA over multiple documents "
     "with inline source references."
 )
 
@@ -173,20 +197,21 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    if st.session_state.pdf_tool is None:
-        warning_message = "Please upload at least one PDF before asking a question."
+    if st.session_state.knowledge_base_tool is None:
+        warning_message = "Please upload at least one document before asking a question."
         with st.chat_message("assistant"):
             st.markdown(warning_message)
         st.session_state.messages.append({"role": "assistant", "content": warning_message})
     else:
-        if st.session_state.crew is None:
-            st.session_state.crew = create_agents_and_tasks(st.session_state.pdf_tool)
-
         with st.chat_message("assistant"):
             message_placeholder = st.empty()
             full_response = ""
             with st.spinner("Searching the knowledge base..."):
-                result = st.session_state.crew.kickoff(inputs={"query": prompt}).raw
+                result, st.session_state.crew = answer_query_with_guardrails(
+                    knowledge_base_tool=st.session_state.knowledge_base_tool,
+                    query=prompt,
+                    crew=st.session_state.crew,
+                )
 
             lines = result.split("\n")
             for index, line in enumerate(lines):
