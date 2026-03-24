@@ -215,3 +215,4 @@ __pycache__/
 eval/results/
 eval/dataset/
 eval/evidence/
+.agentic_rag_cache/

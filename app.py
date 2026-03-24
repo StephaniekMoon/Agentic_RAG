@@ -1,7 +1,7 @@
 import gc
 import os
-import tempfile
 import time
+from pathlib import Path
 from typing import Optional
 
 import streamlit as st
@@ -11,6 +11,7 @@ from crewai_tools import SerperDevTool
 from src.agentic_rag.tools.custom_tool import DocumentSearchTool, SUPPORTED_DOCUMENT_EXTENSIONS
 
 SUPPORTED_UPLOAD_TYPES = [extension.removeprefix(".") for extension in SUPPORTED_DOCUMENT_EXTENSIONS]
+KNOWLEDGE_ROOT = Path(__file__).resolve().parent / "knowledge"
 
 
 def build_web_search_tool() -> Optional[SerperDevTool]:
@@ -121,28 +122,66 @@ def reset_knowledge_base() -> None:
     st.session_state.crew = None
     st.session_state.knowledge_base_signature = None
     st.session_state.knowledge_sources = []
+    st.session_state.active_library_name = None
     gc.collect()
 
 
-def index_uploaded_documents(uploaded_files) -> None:
-    """Index uploaded documents once per unique upload set."""
-    file_signature = tuple((uploaded_file.name, uploaded_file.size) for uploaded_file in uploaded_files)
-    if file_signature == st.session_state.knowledge_base_signature:
+def discover_knowledge_libraries() -> list[Path]:
+    """Return named knowledge libraries from the knowledge root."""
+    if not KNOWLEDGE_ROOT.is_dir():
+        return []
+    return sorted(path for path in KNOWLEDGE_ROOT.iterdir() if path.is_dir())
+
+
+def list_library_documents(library_dir: Path) -> list[str]:
+    """Return supported documents contained in a knowledge library folder."""
+    supported_suffixes = {suffix.lower() for suffix in SUPPORTED_DOCUMENT_EXTENSIONS}
+    file_paths = [
+        str(path.resolve())
+        for path in library_dir.rglob("*")
+        if path.is_file() and path.suffix.lower() in supported_suffixes
+    ]
+    return sorted(file_paths)
+
+
+def build_library_signature(library_name: str, file_paths: list[str]) -> tuple:
+    """Track the selected library and file metadata to know when a refresh is required."""
+    signature_items = []
+    for file_path in file_paths:
+        stat_result = os.stat(file_path)
+        signature_items.append(
+            (
+                os.path.relpath(file_path, KNOWLEDGE_ROOT),
+                stat_result.st_size,
+                stat_result.st_mtime_ns,
+            )
+        )
+    return (library_name, tuple(signature_items))
+
+
+def load_selected_library(library_name: str, force_reload: bool = False) -> None:
+    """Load one folder-backed knowledge library into the active session."""
+    library_dir = KNOWLEDGE_ROOT / library_name
+    file_paths = list_library_documents(library_dir)
+    if not file_paths:
+        reset_chat()
+        st.session_state.knowledge_base_tool = None
+        st.session_state.crew = None
+        st.session_state.knowledge_base_signature = None
+        st.session_state.knowledge_sources = []
+        st.session_state.active_library_name = library_name
         return
 
-    with tempfile.TemporaryDirectory() as temp_dir:
-        file_paths = []
-        for uploaded_file in uploaded_files:
-            temp_file_path = os.path.join(temp_dir, uploaded_file.name)
-            with open(temp_file_path, "wb") as handle:
-                handle.write(uploaded_file.getvalue())
-            file_paths.append(temp_file_path)
+    library_signature = build_library_signature(library_name=library_name, file_paths=file_paths)
+    if not force_reload and library_signature == st.session_state.knowledge_base_signature:
+        return
 
-        with st.spinner("Indexing enterprise knowledge base... Please wait..."):
-            st.session_state.knowledge_base_tool = DocumentSearchTool(file_paths=file_paths)
+    with st.spinner(f"Loading knowledge library '{library_name}'... Please wait..."):
+        st.session_state.knowledge_base_tool = DocumentSearchTool(file_paths=file_paths)
 
-    st.session_state.knowledge_base_signature = file_signature
+    st.session_state.knowledge_base_signature = library_signature
     st.session_state.knowledge_sources = st.session_state.knowledge_base_tool.describe_sources()
+    st.session_state.active_library_name = library_name
     st.session_state.crew = None
     st.session_state.messages = []
 
@@ -162,23 +201,53 @@ if "knowledge_base_signature" not in st.session_state:
 if "knowledge_sources" not in st.session_state:
     st.session_state.knowledge_sources = []
 
+if "active_library_name" not in st.session_state:
+    st.session_state.active_library_name = None
+
 
 with st.sidebar:
     st.header("Enterprise Knowledge Base")
-    uploaded_files = st.file_uploader(
-        "Upload PDF or Word documents",
-        type=SUPPORTED_UPLOAD_TYPES,
-        accept_multiple_files=True,
-    )
+    libraries = discover_knowledge_libraries()
 
-    if uploaded_files:
-        index_uploaded_documents(uploaded_files)
-        st.success(f"Indexed {len(st.session_state.knowledge_sources)} documents.")
-        st.caption("Current knowledge base:")
-        for source_name in st.session_state.knowledge_sources:
-            st.write(f"- {source_name}")
+    if libraries:
+        library_names = [path.name for path in libraries]
+        active_library = st.session_state.active_library_name
+        default_library_index = library_names.index(active_library) if active_library in library_names else 0
+        selected_library = st.radio(
+            "Select Library",
+            options=library_names,
+            index=default_library_index,
+            help="Each subfolder under knowledge/ is treated as an independent long-term knowledge base.",
+        )
+        reload_library = st.button("Reload Selected Library")
+        load_selected_library(selected_library, force_reload=reload_library)
+
+        library_document_paths = list_library_documents(KNOWLEDGE_ROOT / selected_library)
+        if library_document_paths:
+            st.success(
+                f"Loaded library '{selected_library}' with {len(library_document_paths)} documents."
+            )
+            st.caption("Current knowledge base:")
+            for source_name in st.session_state.knowledge_sources:
+                st.write(f"- {source_name}")
+        else:
+            st.warning(
+                f"Library '{selected_library}' has no PDF or Word documents yet. "
+                "Add files under knowledge/{selected_library} and click reload."
+            )
     else:
-        st.info("Add internal PDFs or Word documents to build the knowledge base.")
+        st.info("Create subfolders under knowledge/ to register independent knowledge libraries.")
+
+    root_level_documents = [
+        path.name
+        for path in KNOWLEDGE_ROOT.iterdir()
+        if path.is_file() and path.suffix.lower() in {suffix.lower() for suffix in SUPPORTED_DOCUMENT_EXTENSIONS}
+    ] if KNOWLEDGE_ROOT.is_dir() else []
+    if root_level_documents:
+        st.caption(
+            "Root-level files under knowledge/ are not part of any named library. "
+            "Move them into a subfolder if you want them selectable in the UI."
+        )
 
     st.button("Clear Chat", on_click=reset_chat)
     st.button("Reset Knowledge Base", on_click=reset_knowledge_base)

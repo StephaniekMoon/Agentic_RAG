@@ -1,0 +1,58 @@
+{
+  "num_queries": 100,
+  "top1_doc_hit_rate": 0.8,
+  "top3_doc_hit_rate": 0.97,
+  "top5_doc_hit_rate": 0.99,
+  "avg_confidence_score": 0.68529,
+  "avg_top_coverage": 0.51439,
+  "confidence_levels": {
+    "high": 32,
+    "medium": 65,
+    "low": 3
+  },
+  "single_doc_count": 91,
+  "single_doc_top1_doc_hit_rate": 0.8241758241758241,
+  "single_doc_top3_doc_hit_rate": 0.978021978021978,
+  "single_doc_avg_confidence_score": 0.6906593406593406,
+  "cross_doc_count": 9,
+  "cross_doc_top1_doc_hit_rate": 0.5555555555555556,
+  "cross_doc_top3_doc_hit_rate": 0.8888888888888888,
+  "cross_doc_avg_confidence_score": 0.631,
+  "per_target_doc": {
+    "ASX_CWN_2021.pdf": {
+      "count": 15,
+      "top1_doc_hit_rate": 0.6,
+      "top3_doc_hit_rate": 1.0
+    },
+    "ASX_DMP_2021.pdf": {
+      "count": 16,
+      "top1_doc_hit_rate": 0.875,
+      "top3_doc_hit_rate": 1.0
+    },
+    "NASDAQ_AAPL_2020.pdf": {
+      "count": 16,
+      "top1_doc_hit_rate": 0.75,
+      "top3_doc_hit_rate": 0.9375
+    },
+    "NASDAQ_CZR_2020.pdf": {
+      "count": 16,
+      "top1_doc_hit_rate": 0.75,
+      "top3_doc_hit_rate": 1.0
+    },
+    "NASDAQ_MSFT_2020.pdf": {
+      "count": 15,
+      "top1_doc_hit_rate": 0.6666666666666666,
+      "top3_doc_hit_rate": 0.8666666666666667
+    },
+    "NYSE_MCD_2020.pdf": {
+      "count": 18,
+      "top1_doc_hit_rate": 0.7222222222222222,
+      "top3_doc_hit_rate": 1.0
+    },
+    "annual-report-adidas-ar20.pdf": {
+      "count": 19,
+      "top1_doc_hit_rate": 0.8947368421052632,
+      "top3_doc_hit_rate": 0.9473684210526315
+    }
+  }
+}

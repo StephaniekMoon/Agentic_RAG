@@ -1,0 +1,39 @@
+{
+  "version": "annual_reports_benchmark_v1",
+  "removed_count": 28,
+  "removed_draft_ids": [
+    "annual_reports_q013",
+    "annual_reports_q021",
+    "annual_reports_q036",
+    "annual_reports_q038",
+    "annual_reports_q039",
+    "annual_reports_q044",
+    "annual_reports_q050",
+    "annual_reports_q051",
+    "annual_reports_q063",
+    "annual_reports_q068",
+    "annual_reports_q071",
+    "annual_reports_q072",
+    "annual_reports_q074",
+    "annual_reports_q076",
+    "annual_reports_q077",
+    "annual_reports_q078",
+    "annual_reports_q089",
+    "annual_reports_q090",
+    "annual_reports_q091",
+    "annual_reports_q092",
+    "annual_reports_q093",
+    "annual_reports_q094",
+    "annual_reports_q095",
+    "annual_reports_q096",
+    "annual_reports_q097",
+    "annual_reports_q098",
+    "annual_reports_q099",
+    "annual_reports_q100"
+  ],
+  "filtering_principles": [
+    "remove broad or weakly bounded summary prompts",
+    "remove high-ambiguity cross-document comparison prompts",
+    "remove prompts likely to require substantial synthesis before evidence annotation"
+  ]
+}

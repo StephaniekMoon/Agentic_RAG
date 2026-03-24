@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import io
+import json
 import math
 import os
 import re
@@ -64,6 +66,7 @@ DEFAULT_CHUNK_TARGET_CHARS = _int_from_env("AGENTIC_RAG_CHUNK_TARGET_CHARS", 900
 DEFAULT_CHUNK_MIN_CHARS = _int_from_env("AGENTIC_RAG_CHUNK_MIN_CHARS", 180)
 DEFAULT_BM25_K1 = _float_from_env("AGENTIC_RAG_BM25_K1", 1.5)
 DEFAULT_BM25_B = _float_from_env("AGENTIC_RAG_BM25_B", 0.75)
+DOCUMENT_CACHE_SCHEMA_VERSION = 1
 
 _TEXT_BLOCK_RE = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+")
 _HAS_MEANINGFUL_TEXT_RE = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]")
@@ -151,9 +154,13 @@ class DocumentSearchTool(BaseTool):
         self._ocr_runtime_cache: tuple[Any, Any, Any] | None = None
         self._ocr_runtime_checked = False
         self._warning_messages_emitted: set[str] = set()
+        self._file_hash_cache: dict[str, str] = {}
+        self.cache_dir = self._resolve_cache_dir()
         self.source_names = [os.path.basename(path) for path in self.file_paths]
         self.chunks: list[ChunkRecord] = []
         self.document_frequencies: Counter[str] = Counter()
+        self.source_token_sets: dict[str, set[str]] = {}
+        self.token_source_frequencies: Counter[str] = Counter()
         self.average_document_length = 0.0
         self._process_documents()
 
@@ -189,20 +196,72 @@ class DocumentSearchTool(BaseTool):
             raise ValueError("DocumentSearchTool requires at least one supported document file.")
         return normalized_paths
 
+    def _resolve_cache_dir(self) -> Path:
+        """Choose a persistent on-disk cache directory for document indexes."""
+        configured_dir = os.getenv("AGENTIC_RAG_CACHE_DIR")
+        if configured_dir:
+            cache_root = Path(configured_dir).expanduser()
+        else:
+            cache_root = Path.cwd() / ".agentic_rag_cache"
+
+        cache_dir = cache_root / "documents"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir
+
     def _process_documents(self) -> None:
         """Process all documents and build a local lexical index."""
         all_chunks: list[ChunkRecord] = []
         for file_path in self.file_paths:
-            if Path(file_path).suffix.lower() == ".pdf":
-                all_chunks.extend(self._extract_pdf_chunks(file_path))
-            else:
-                all_chunks.extend(self._extract_generic_document_chunks(file_path))
+            all_chunks.extend(self._load_or_build_document_index(file_path))
 
-        indexed_chunks: list[ChunkRecord] = []
         document_frequencies: Counter[str] = Counter()
+        source_token_sets: dict[str, set[str]] = {}
         total_length = 0
 
         for chunk in all_chunks:
+            if not chunk.tokens:
+                chunk.tokens = self._tokenize_text(chunk.text)
+            if not chunk.tokens:
+                continue
+            if not chunk.term_freqs:
+                chunk.term_freqs = Counter(chunk.tokens)
+            if chunk.length <= 0:
+                chunk.length = len(chunk.tokens)
+            total_length += chunk.length
+            document_frequencies.update(set(chunk.tokens))
+            source_token_sets.setdefault(chunk.source, set()).update(chunk.tokens)
+
+        if not all_chunks:
+            raise ValueError("No usable text was extracted from the uploaded documents.")
+
+        self.chunks = all_chunks
+        self.document_frequencies = document_frequencies
+        self.source_token_sets = source_token_sets
+        self.token_source_frequencies = Counter(
+            token for token_set in source_token_sets.values() for token in token_set
+        )
+        self.average_document_length = total_length / len(all_chunks)
+
+    def _load_or_build_document_index(self, path: str) -> list[ChunkRecord]:
+        """Load a cached per-document lexical index or build it on demand."""
+        cache_path = self._document_cache_path(path)
+        cached_chunks = self._load_cached_document_index(cache_path=cache_path, source_path=path)
+        if cached_chunks is not None:
+            return cached_chunks
+
+        if Path(path).suffix.lower() == ".pdf":
+            raw_chunks = self._extract_pdf_chunks(path)
+        else:
+            raw_chunks = self._extract_generic_document_chunks(path)
+
+        indexed_chunks = self._index_document_chunks(raw_chunks)
+        self._save_cached_document_index(cache_path=cache_path, source_path=path, chunks=indexed_chunks)
+        return indexed_chunks
+
+    def _index_document_chunks(self, chunks: list[ChunkRecord]) -> list[ChunkRecord]:
+        """Attach lexical tokens and term frequencies so they can be reused across sessions."""
+        indexed_chunks: list[ChunkRecord] = []
+        for chunk in chunks:
             tokens = self._tokenize_text(chunk.text)
             if not tokens:
                 continue
@@ -210,15 +269,120 @@ class DocumentSearchTool(BaseTool):
             chunk.term_freqs = Counter(tokens)
             chunk.length = len(tokens)
             indexed_chunks.append(chunk)
-            total_length += chunk.length
-            document_frequencies.update(set(tokens))
+        return indexed_chunks
 
-        if not indexed_chunks:
-            raise ValueError("No usable text was extracted from the uploaded documents.")
+    def _document_cache_path(self, path: str) -> Path:
+        file_hash = self._file_content_hash(path)
+        config_hash = self._document_config_hash()
+        return self.cache_dir / f"{file_hash}_{config_hash}.json"
 
-        self.chunks = indexed_chunks
-        self.document_frequencies = document_frequencies
-        self.average_document_length = total_length / len(indexed_chunks)
+    def _document_config_hash(self) -> str:
+        """Include extraction settings in the cache key so incompatible indexes do not mix."""
+        config_payload = {
+            "schema_version": DOCUMENT_CACHE_SCHEMA_VERSION,
+            "enable_pdf_image_ocr": self.enable_pdf_image_ocr,
+            "ocr_lang": self.ocr_lang,
+            "ocr_min_text_length": self.ocr_min_text_length,
+            "ocr_min_image_dimension": self.ocr_min_image_dimension,
+            "chunk_target_chars": self.chunk_target_chars,
+            "chunk_min_chars": self.chunk_min_chars,
+        }
+        serialized = json.dumps(config_payload, sort_keys=True, ensure_ascii=True).encode("utf-8")
+        return hashlib.sha256(serialized).hexdigest()[:16]
+
+    def _file_content_hash(self, path: str) -> str:
+        resolved = os.path.abspath(path)
+        cached_hash = self._file_hash_cache.get(resolved)
+        if cached_hash:
+            return cached_hash
+
+        digest = hashlib.sha256()
+        with open(resolved, "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+
+        file_hash = digest.hexdigest()
+        self._file_hash_cache[resolved] = file_hash
+        return file_hash
+
+    def _load_cached_document_index(self, cache_path: Path, source_path: str) -> list[ChunkRecord] | None:
+        if not cache_path.is_file():
+            return None
+
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._warn_once(
+                f"Document cache read failed for {os.path.basename(source_path)}; rebuilding index. {exc}"
+            )
+            return None
+
+        if payload.get("schema_version") != DOCUMENT_CACHE_SCHEMA_VERSION:
+            return None
+
+        chunk_payloads = payload.get("chunks")
+        if not isinstance(chunk_payloads, list):
+            return None
+
+        chunks: list[ChunkRecord] = []
+        for chunk_payload in chunk_payloads:
+            if not isinstance(chunk_payload, dict):
+                return None
+            chunk = ChunkRecord(
+                source=str(chunk_payload.get("source") or os.path.basename(source_path)),
+                chunk_id=str(chunk_payload.get("chunk_id") or ""),
+                text=str(chunk_payload.get("text") or ""),
+                page=chunk_payload.get("page"),
+                block_type=str(chunk_payload.get("block_type") or "text"),
+                section_title=chunk_payload.get("section_title"),
+                tokens=list(chunk_payload.get("tokens") or []),
+                term_freqs=Counter(chunk_payload.get("term_freqs") or {}),
+                length=int(chunk_payload.get("length") or 0),
+            )
+            if chunk.chunk_id and chunk.text:
+                chunks.append(chunk)
+
+        return chunks or None
+
+    def _save_cached_document_index(
+        self,
+        cache_path: Path,
+        source_path: str,
+        chunks: list[ChunkRecord],
+    ) -> None:
+        payload = {
+            "schema_version": DOCUMENT_CACHE_SCHEMA_VERSION,
+            "source_name": os.path.basename(source_path),
+            "file_hash": self._file_content_hash(source_path),
+            "chunks": [
+                {
+                    "source": chunk.source,
+                    "chunk_id": chunk.chunk_id,
+                    "text": chunk.text,
+                    "page": chunk.page,
+                    "block_type": chunk.block_type,
+                    "section_title": chunk.section_title,
+                    "tokens": chunk.tokens,
+                    "term_freqs": dict(chunk.term_freqs),
+                    "length": chunk.length,
+                }
+                for chunk in chunks
+            ],
+        }
+
+        temporary_path = cache_path.with_suffix(".tmp")
+        try:
+            temporary_path.write_text(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            temporary_path.replace(cache_path)
+        except Exception as exc:
+            self._warn_once(
+                f"Document cache write failed for {os.path.basename(source_path)}; continuing without persistence. {exc}"
+            )
+            if temporary_path.exists():
+                temporary_path.unlink(missing_ok=True)
 
     def _extract_pdf_chunks(self, path: str) -> list[ChunkRecord]:
         """Extract PDF-specific chunks for headings, TOC blocks, body text, tables, and OCR."""
@@ -824,7 +988,34 @@ class DocumentSearchTool(BaseTool):
             return 0.0
         return math.log(1.0 + (document_count - document_frequency + 0.5) / (document_frequency + 0.5))
 
-    def _score_chunk(self, chunk: ChunkRecord, query: str, query_tokens: list[str]) -> float:
+    def _infer_query_source_preferences(self, query_tokens: list[str]) -> dict[str, int]:
+        """Find sources strongly indicated by source-specific tokens in the query."""
+        if not query_tokens or not self.source_token_sets:
+            return {}
+
+        preferred_sources: Counter[str] = Counter()
+        unique_tokens = set(query_tokens)
+        max_source_frequency = max(2, math.ceil(max(1, len(self.source_token_sets)) * 0.3))
+
+        for token in unique_tokens:
+            if len(token) <= 2:
+                continue
+            source_frequency = self.token_source_frequencies.get(token, 0)
+            if source_frequency == 0 or source_frequency > max_source_frequency:
+                continue
+            for source_name, source_tokens in self.source_token_sets.items():
+                if token in source_tokens:
+                    preferred_sources[source_name] += 1
+
+        return dict(preferred_sources)
+
+    def _score_chunk(
+        self,
+        chunk: ChunkRecord,
+        query: str,
+        query_tokens: list[str],
+        preferred_sources: dict[str, int] | None = None,
+    ) -> float:
         if not query_tokens:
             return 0.0
 
@@ -854,6 +1045,15 @@ class DocumentSearchTool(BaseTool):
         unique_query_tokens = set(query_tokens)
         if unique_query_tokens and unique_query_tokens.issubset(set(chunk.tokens)):
             score += 0.75
+
+        if score > 0 and preferred_sources:
+            source_match_count = preferred_sources.get(chunk.source, 0)
+            if source_match_count > 0:
+                # Promote chunks from the source implied by company-specific query tokens.
+                score += 1.2 + min(1.2, 0.45 * (source_match_count - 1))
+            else:
+                # Mildly downweight near-duplicate business language from other sources.
+                score *= 0.88
 
         if score > 0 and chunk.block_type == "pdf_heading":
             score += 0.2
@@ -928,9 +1128,15 @@ class DocumentSearchTool(BaseTool):
             return []
 
         unique_query_tokens = sorted(set(query_tokens))
+        preferred_sources = self._infer_query_source_preferences(query_tokens)
         ranked_hits: list[SearchHit] = []
         for chunk in self.chunks:
-            score = self._score_chunk(chunk=chunk, query=query, query_tokens=query_tokens)
+            score = self._score_chunk(
+                chunk=chunk,
+                query=query,
+                query_tokens=query_tokens,
+                preferred_sources=preferred_sources,
+            )
             if score <= 0:
                 continue
             matched_terms = [token for token in unique_query_tokens if chunk.term_freqs.get(token, 0) > 0]
